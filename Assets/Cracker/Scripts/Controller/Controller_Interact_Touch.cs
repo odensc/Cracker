@@ -24,32 +24,20 @@ namespace Cracker
 			collider.isTrigger = true;
 		}
 
-		/**
-		 * <summary>
-		 * Checks if the provided GameObject has an Interactable component.
-		 * </summary>
-		 * <param name="go">The GameObject to check.</param>
-		 * <returns>If <paramref name="go"/> has an Interactable component.</returns>
-		 */
-		bool IsInteractable(GameObject go)
-		{
-			return go.GetComponent<Interactable>() != null;
-		}
-
 		void OnTriggerStay(Collider collider)
 		{
-			if (touchedObject == null && IsInteractable(collider.gameObject))
+			if (touchedObject == null && Interactable.GetInteractable(collider.gameObject) != null)
 			{
-				collider.GetComponent<Interactable>().Select(true, GetComponent<Controller>(), highlightColor);
+				Interactable.GetInteractable(collider.gameObject).Select(true, GetComponent<Controller>(), highlightColor);
 				touchedObject = collider.gameObject;
 			}
 		}
 
 		void OnTriggerExit(Collider collider)
 		{
-			if (IsInteractable(collider.gameObject))
+			if (Interactable.GetInteractable(collider.gameObject) != null)
 			{
-				collider.GetComponent<Interactable>().Select(false, GetComponent<Controller>(), null);
+				Interactable.GetInteractable(collider.gameObject).Select(false, GetComponent<Controller>(), null);
 			}
 
 			touchedObject = null;

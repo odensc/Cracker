@@ -7,15 +7,22 @@ namespace Cracker
 	public class Controller_Interact_Grab : MonoBehaviour
 	{
 		#region Variables
+		[Tooltip("The controller button to trigger a grab.")]
+		public ControllerButton controllerButton = ControllerButton.Trigger;
 		[Tooltip("The render model component to attach grabbed objects to.")]
 		public string modelAttachComponent = "tip";
+		[Header("Global Options")]
 		[Tooltip("Pause collisions when grabbing an object.")]
 		public bool pauseCollisions = false;
 
+		[System.NonSerialized]
+		public Rigidbody _attachComponent;
+
 		private SteamVR_TrackedObject trackedObj;
 		private Controller controller;
-		private FixedJoint joint;
-		private Rigidbody attachPoint;
+		private Joint joint;
+		private Interactable grabbedObj;
+		private Transform prevParent;
 		#endregion
 
 		#region Instance Methods
@@ -24,8 +31,12 @@ namespace Cracker
 			controller = GetComponent<Controller>();
 			trackedObj = GetComponent<SteamVR_TrackedObject>();
 			SteamVR_Utils.Event.Listen("render_model_loaded", OnRenderModelLoaded);
-			GetComponent<SteamVR_TrackedController>().TriggerClicked += new ClickedEventHandler(DoGrabOn);
-			GetComponent<SteamVR_TrackedController>().TriggerUnclicked += new ClickedEventHandler(DoGrabOff);
+			if (GetComponentInChildren<SteamVR_RenderModel>().FindComponent(modelAttachComponent))
+				OnRenderModelLoaded(GetComponentInChildren<SteamVR_RenderModel>(), true);
+
+			var trackedCon = GetComponent<SteamVR_TrackedController>();
+			controllerButton.AddClicked(trackedCon, DoGrabOn);
+			controllerButton.AddUnclicked(trackedCon, DoGrabOff);
 		}
 
 		void OnRenderModelLoaded(params object[] args)
@@ -38,65 +49,122 @@ namespace Cracker
 				if (!renderModel.transform.IsChildOf(transform)) return;
 
 				GameObject attach = renderModel.FindComponent(modelAttachComponent).GetChild(0).gameObject;
-				attachPoint = attach.AddComponent<Rigidbody>();
-				attachPoint.isKinematic = true;
+				_attachComponent = attach.AddComponent<Rigidbody>();
+				_attachComponent.isKinematic = true;
 			}
 		}
 
 		void DoGrabOn(object sender, ClickedEventArgs e)
 		{
-			if (joint == null)
+			if (!grabbedObj)
 			{
 				var go = GetComponent<Controller_Interact_Touch>().GetTouchedObject();
 				if (!go) return;
 				// controller_touch checks for interactable, so it's guaranteed we have one
-				var interactable = go.GetComponent<Interactable>();
+				var interactable = Interactable.GetInteractable(go);
 				if (go != null && interactable.isGrabbable && !interactable.IsInteracting())
 				{
 					// triggers a slight haptic pulse, attach the grabbed object with a joint, and start interaction
-					controller.TriggerHapticPulse(1);
-					SetCollisions(go, false);
-					go.transform.position = attachPoint.transform.position;
+					controller.TriggerHapticPulse(1, 1000);
+					SetCollisions(interactable, false);
+					if (interactable.updateTransform)
+					{
+						// if there's an attach point, snap to it
+						if (interactable.attachPoint)
+						{
+							interactable.transform.rotation = _attachComponent.transform.rotation * Quaternion.Euler(interactable.attachPoint.localEulerAngles);
+							interactable.transform.position = _attachComponent.transform.position -
+								(interactable.attachPoint.position - interactable.transform.position);
 
-					joint = go.AddComponent<FixedJoint>();
-					joint.connectedBody = attachPoint;
+						}
+						// otherwise snap to controller
+						else
+						{
+							interactable.transform.position = _attachComponent.transform.position;
+						}
+					}
+
+					switch (interactable.grabMechanic.type)
+					{
+						case GrabMechanic.GrabMechanicType.FixedJoint:
+							joint = interactable.gameObject.AddComponent<FixedJoint>();
+							joint.breakForce = interactable.grabMechanic.breakForce;
+							joint.connectedBody = _attachComponent;
+							if (interactable.grabMechanic.toggleKinematic)
+								interactable.GetComponent<Rigidbody>().isKinematic = false;
+							break;
+
+						case GrabMechanic.GrabMechanicType.SpringJoint:
+							var spring = interactable.gameObject.AddComponent<SpringJoint>();
+							spring.spring = interactable.grabMechanic.springJointStrength;
+							spring.damper = interactable.grabMechanic.springJointDamper;
+							spring.anchor = interactable.transform.InverseTransformPoint(_attachComponent.position);
+							joint = spring;
+							joint.breakForce = interactable.grabMechanic.breakForce;
+							joint.connectedBody = _attachComponent;
+							break;
+
+						case GrabMechanic.GrabMechanicType.ParentTransform:
+							prevParent = interactable.transform.parent;
+							interactable.transform.parent = transform;
+							break;
+					}
+
+					grabbedObj = interactable;
 					interactable.StartInteraction(controller);
 				}
 			}
 		}
 
-		void DoGrabOff(object sender, ClickedEventArgs e)
+		public void DoGrabOff(object sender, ClickedEventArgs e)
 		{
-			if (joint != null)
+			if (grabbedObj)
 			{
 				// triggers a slight haptic pulse, drops grabbed object, and stop interaction
-				var go = joint.gameObject;
-				var rigidbody = go.GetComponent<Rigidbody>();
-				var interactable = go.GetComponent<Interactable>();
-				controller.TriggerHapticPulse(1);
-				Destroy(joint);
-				joint = null;
-				SetCollisions(go, true);
-				interactable.StopInteraction(controller);
+				var rigidbody = grabbedObj.GetComponent<Rigidbody>();
+				controller.TriggerHapticPulse(1, 650);
+				if (joint)
+					Destroy(joint);
+				else if (prevParent && grabbedObj.grabMechanic.restoreParent)
+					grabbedObj.transform.parent = prevParent;
+				else if (prevParent)
+					grabbedObj.transform.parent = null;
 
-				if (interactable.applyVelocity)
+				joint = null;
+				prevParent = null;
+				SetCollisions(grabbedObj, true);
+				grabbedObj.StopInteraction(controller);
+
+				if (grabbedObj.applyVelocity)
 				{
 					// applies the velocities of the controller to the object when thrown/dropped
-					var device = SteamVR_Controller.Input((int)trackedObj.index);
+					var device = SteamVR_Controller.Input((int) trackedObj.index);
 					var origin = trackedObj.origin ? trackedObj.origin : trackedObj.transform.parent;
 					var vel = origin ? origin.TransformVector(device.velocity) : device.velocity;
 					var angVel = origin ? origin.TransformVector(device.angularVelocity) : device.angularVelocity;
+					vel.Scale(grabbedObj.velocityMultiplier);
 					rigidbody.velocity = vel;
 					rigidbody.angularVelocity = angVel;
 
 					rigidbody.maxAngularVelocity = rigidbody.angularVelocity.magnitude;
 				}
+
+				if (grabbedObj.grabMechanic.toggleKinematic)
+					rigidbody.isKinematic = true;
+
+				grabbedObj = null;
 			}
 		}
 
-		void SetCollisions(GameObject go, bool state)
+		void SetCollisions(Interactable interactable, bool state)
 		{
-			if (pauseCollisions) go.GetComponent<Rigidbody>().detectCollisions = state;
+			if (pauseCollisions)
+			{
+				foreach (Rigidbody body in interactable.GetComponentsInChildren<Rigidbody>())
+					body.detectCollisions = state;
+
+				interactable.GetComponent<Rigidbody>().detectCollisions = state;
+			}
 		}
 		#endregion
 	}

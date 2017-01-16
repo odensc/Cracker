@@ -23,7 +23,7 @@ namespace Cracker
 		void Update()
 		{
 			var device = SteamVR_Controller.Input((int) trackedObj.index);
-			if (hapticPulseDuration > 0)
+			if (hapticPulseDuration > 0 && hapticPulseStrength > 0)
 			{
 				device.TriggerHapticPulse(hapticPulseStrength);
 				hapticPulseDuration -= Time.deltaTime * 1000;
